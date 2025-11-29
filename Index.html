@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interactive Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; width: 100%; }
+    .sidebar {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: white;
+      padding: 12px;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      z-index: 9999;
+      width: 250px;
+      font-family: sans-serif;
+    }
+    .preview-img { max-width: 100%; border-radius: 6px; margin-top: 6px; }
+    .preview-img:hover { cursor: zoom-in; }
+    #imgModal { display:none; position:fixed; z-index:10000; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.8); justify-content:center; align-items:center; }
+    #imgModal img { max-width:90%; max-height:90%; border-radius:12px; }
+  </style>
+</head>
+<body>
+  <div class="sidebar">
+    <h3>Map</h3>
+    <button id="addMarkerBtn">Marker setzen</button>
+    <br><br>
+    <label>Eigene Karte hochladen: <input type="file" id="mapUpload" accept="image/*"></label>
+    <br><br>
+    <button id="exportBtn">Marker exportieren</button>
+    <input type="file" id="importFile" accept="application/json">
+    <button id="importBtn">Importieren</button>
+  </div>
+
+  <div id="map"></div>
+  <div id="imgModal"><img id="modalImg"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    let map, addMode=false, markers=[], mapImageUrl=null, mapWidth=2048, mapHeight=2048, imageOverlay;
+
+    function saveToLocalStorage(){
+      if(mapImageUrl) {
+        localStorage.setItem("map_data", JSON.stringify({mapImageUrl,mapWidth,mapHeight,markers}));
+      }
+    }
+
+    function loadFromLocalStorage(){
+      const raw=localStorage.getItem("map_data");
+      if(!raw) return;
+      try {
+        const data=JSON.parse(raw);
+        if(data.mapImageUrl) mapImageUrl=data.mapImageUrl;
+        if(data.mapWidth) mapWidth=data.mapWidth;
+        if(data.mapHeight) mapHeight=data.mapHeight;
+        markers=data.markers||[];
+      } catch{}
+    }
+
+    function initMap(){
+      loadFromLocalStorage();
+      map=L.map('map',{crs:L.CRS.Simple,minZoom:-3});
+      const bounds=[[0,0],[mapHeight,mapWidth]];
+      if(mapImageUrl) imageOverlay=L.imageOverlay(mapImageUrl,bounds).addTo(map);
+      map.fitBounds(bounds);
+      markers.forEach(m=>{ createMarker({lat:m.y,lng:m.x},m.title,m.desc,m.img); });
+      map.on("click",e=>{ if(!addMode) return; openMarkerEditor(e.latlng); });
+    }
+
+    function openMarkerEditor(latlng){
+      const title=prompt("Titel des Markers:");
+      if(!title) return;
+      const desc=prompt("Beschreibung (optional):")||"";
+      const imgInput=document.createElement("input");
+      imgInput.type="file";
+      imgInput.accept="image/*";
+      imgInput.onchange=async()=>{
+        let imgBase64=null;
+        if(imgInput.files[0]) imgBase64=await fileToBase64(imgInput.files[0]);
+        createMarker(latlng,title,desc,imgBase64);
+      };
+      imgInput.click();
+    }
+
+    async function fileToBase64(file){
+      return new Promise(res=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.readAsDataURL(file); });
+    }
+
+    function createMarker(latlng,title,desc,img){
+      const m=L.marker(latlng,{draggable:true}).addTo(map);
+      const html=`<b>${title}</b><br><p>${desc}</p>${img?`<img src='${img}' class='preview-img'>`:''}`;
+      m.bindPopup(html);
+      m.on("popupopen",()=>{
+        const imgEl=document.querySelector('.leaflet-popup-content img');
+        if(imgEl) imgEl.onclick=()=>{
+          document.getElementById('modalImg').src=imgEl.src;
+          document.getElementById('imgModal').style.display='flex';
+        };
+      });
+      markers.push({x:latlng.lng,y:latlng.lat,title,desc,img});
+      saveToLocalStorage();
+      m.on("dragend",e=>{
+        const pos=e.target.getLatLng();
+        const entry=markers.find(k=>k.title===title && k.desc===desc);
+        if(entry){ entry.x=pos.lng; entry.y=pos.lat; }
+        saveToLocalStorage();
+      });
+    }
+
+    document.getElementById("addMarkerBtn").onclick=()=>{ addMode=!addMode; alert(addMode?"Klicke auf die Karte, um einen Marker zu setzen.":"Marker setzen deaktiviert."); };
+    document.getElementById("exportBtn").onclick=()=>{
+      const data=JSON.stringify({mapImageUrl,mapWidth,mapHeight,markers},null,2);
+      const blob=new Blob([data],{type:"application/json"});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement("a"); a.href=url; a.download="markers.json"; a.click();
+    };
+    document.getElementById("importBtn").onclick=async()=>{
+      const fileInput=document.getElementById("importFile");
+      if(!fileInput.files[0]) return alert("Bitte JSON wählen.");
+      const text=await fileInput.files[0].text();
+      const data=JSON.parse(text);
+      if(data.mapImageUrl){ mapImageUrl=data.mapImageUrl; mapWidth=data.mapWidth; mapHeight=data.mapHeight; }
+      markers=data.markers||[];
+      if(imageOverlay) map.removeLayer(imageOverlay);
+      if(mapImageUrl){
+        const bounds=[[0,0],[mapHeight,mapWidth]];
+        imageOverlay=L.imageOverlay(mapImageUrl,bounds).addTo(map);
+        map.fitBounds(bounds);
+      }
+      markers.forEach(m=>{ createMarker({lat:m.y,lng:m.x},m.title,m.desc,m.img); });
+      saveToLocalStorage();
+    };
+
+    document.getElementById("mapUpload").onchange=async(e)=>{
+      const file=e.target.files[0];
+      if(!file) return;
+      const img=await fileToBase64(file);
+      const image=new Image();
+      image.src=img;
+      image.onload=()=>{
+        mapImageUrl=img;
+        mapWidth=image.width;
+        mapHeight=image.height;
+        if(imageOverlay) map.removeLayer(imageOverlay);
+        const bounds=[[0,0],[mapHeight,mapWidth]];
+        imageOverlay=L.imageOverlay(img,bounds).addTo(map);
+        map.fitBounds(bounds);
+        saveToLocalStorage();
+      };
+    };
+
+    document.getElementById('imgModal').onclick=()=>{ document.getElementById('imgModal').style.display='none'; };
+
+    initMap();
+  </script>
+</body>
+</html>
